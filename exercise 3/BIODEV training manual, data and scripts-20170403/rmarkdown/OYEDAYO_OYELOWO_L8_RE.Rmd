@@ -1,0 +1,401 @@
+---
+title: "Comparison of accuracies of RapidEye and Landsat 8 OLI images in mapping forest attributes"
+author: "Oyedayo Oyelowo"
+date: "9 April 2017"
+output: html_document
+---
+
+
+# MAP TREE ATTRIBUTES USING RAPIDEYE AND LANDSAT 8 IMAGES AND kNN METHOD
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+##########################
+#SET WORKING DIRECTORY
+##########################
+
+# clean the working environment and graphics
+rm(list=ls()); graphics.off()
+
+# specify path to your working directory
+setwd("C:/Users/oyelo/Desktop/advanced remote sensing/exercise 3/BIODEV training manual, data and scripts-20170403/R/R/Data")
+getwd()
+
+#Set path for packages installation and load the packages
+.libPaths("C:/Users/oyelo/Desktop/advanced remote sensing/exercise 3")
+
+library(sp)
+library(rgdal)
+library(raster)
+library(yaImpute)
+library(fastICA)
+
+
+
+##########################
+#RUN FUNCTIONS
+##########################
+
+#####
+# Function for accuracy assessment
+#####
+
+print.accuracy <- function(obs, fit, main) {
+  print(main)
+  res <- fit-obs
+  bias <- signif(mean(res), 3); cat("BIAS:", bias)
+  bias.r <- signif(bias/mean(obs)*100, 3); cat( " (",bias.r,"%)\n", sep="")
+  RMSE <- signif(sqrt(sum((res^2)/length(res))), 3); cat("RMSE:",RMSE)
+  RMSE.r <- signif(RMSE/mean(obs)*100, 3); cat( " (",RMSE.r,"%)\n", sep="")
+  R2 <- signif(cor(obs,fit,method="pearson")^2, 3); #pseudo R^2
+  cat("Pseudo R.squared: ", R2,"\n\n", sep="")
+  ret <- c(bias, bias.r, RMSE, RMSE.r, R2)
+}
+
+
+#####
+# Function for leave-one-out cross-validation
+#####
+
+cv.plot <- function(data, yvar, xvars, k, yai.method) {
+  pred <- numeric(nrow(data)) #empty vector for results
+  for(i in 1:nrow(data)){
+    ref <- which(row.names(data)!=i)
+    val <- which(row.names(data)==i)
+    x <- as.data.frame(data[,xvars])
+    y <- as.data.frame(data[ref, yvar])
+    names(y) <- yvar
+    row.names(y) <- row.names(data)[-val]
+    knn <- yai(x=x, y=y, k=k, data=data, method=yai.method)
+    imp <- impute(knn, k=k, method="dstWeighted", ancillaryData=y)
+    pred[val] <- imp[as.numeric(row.names(imp)) %in% val, yvar]
+  }
+  
+  #print results
+  res <- print.accuracy(data[,yvar], pred, yvar)
+  xlim <- max(data[,yvar])
+  plot(data[,yvar], pred, main=yvar, xlab="Observed", ylab="Predicted",
+       xlim=c(0,xlim), ylim=c(0,xlim))
+  abline(0,1)
+  return(res)
+}
+
+##########################
+#LOAD INPUT DATA 
+##########################
+
+# load required field data
+load("Kou_input_plots.rda")   #"Plots" are required because of coordinates
+load("PlotData_Kou.rda")      #Plot-level results
+```
+
+
+##########################
+#RAPIDEYE IMAGE
+##########################'
+```{r, warning=FALSE}
+
+# "re_refl.tiff" is a spatial subset of Rapid Eye satellite image
+
+# load multiband satellite image stack
+rapideye<- stack("C:/Users/oyelo/Desktop/advanced remote sensing/exercise 3/BIODEV training manual, data and scripts-20170403/R/R/Data/re_refl.tif")
+rapideye#see properties of RasterStack object
+
+# aggregare ERapid EYe
+rapideye.30m<-aggregate(rapideye, fact=6, fun=mean)
+rapideye.30m
+
+#remove unnecessary files
+rm(rapideye)
+
+# the image has five spectral bands corresponding to blue, green, red, red edge
+# near infrared (NIR)  parts of the electromagnetic
+# spectrum
+
+# rename bands
+bands_re <- c("b.re","g.re","r.re","rededge","nir.re")
+names(rapideye.30m) <- bands_re
+
+
+par(mfrow=c(1,2))
+# visualize the image
+plotRGB(rapideye.30m, r="r.re", g="g.re", b="b.re", stretch="lin", main="RE truecolour")
+
+# this is so called "true-color" composite as it best corresponds to colors seen by eye
+
+# several "false-color" composites exist for visualization
+# here, green vegetation is seen in red (strong reflectance in near infrared)
+plotRGB(rapideye.30m, r="nir.re", g="r.re", b="g.re", stretch="lin", main="RE false colour")
+```
+
+
+
+##########################
+#LANDSAT IMAGE
+##########################
+```{r, warning=FALSE}
+
+# "Landsat.tiff" is a spatial subset of Landsat 8 OLI satellite image
+# acquired 11 October 2013
+
+# load multiband satellite image stack
+landsat<- stack("C:/Users/oyelo/Desktop/advanced remote sensing/exercise 3/BIODEV training manual, data and scripts-20170403/R/R/Data/ls8_sr_2014_02_16.tif")
+landsat#see properties of RasterStack object
+
+# the image has six spectral bands corresponding to blue, green, red, 
+# near infrared (NIR) and short waveinfrared (SWIR) parts of the electromagnetic
+# spectrum
+
+# rename bands
+bands_l8 <- c("b","g","r","nir","swir1","swir2")
+names(landsat) <- bands_l8
+
+
+par(mfrow=c(1,2))
+# visualize the image
+plotRGB(landsat, r="r", g="g", b="b", stretch="lin", main="LS8 true colour")
+# the image covers 12 km x 12 km area around sentinel site mid-point
+# this is so called "true-color" composite as it best corresponds to colors seen by eye
+
+# several "false-color" composites exist for visualization
+# here, green vegetation is seen in red (strong reflectance in near infrared)
+plotRGB(landsat, r="nir", g="r", b="g", stretch="lin", main="LS8 false colour")
+```
+
+
+
+
+
+
+
+##########################
+#JOIN FIELD DATA WITH COORDINATES FOR RAPIDEYE
+##########################
+```{r, warning=FALSE}
+# merge Plot.data with plots (coordinates only)
+data <- merge(Plot.data, plots[c("plot.id","lat","lon")], by="plot.id", all.x=TRUE)
+
+# reproject coordinates from Lat/Lon to UTM
+# add columns for "utm_x" and "utm_y"
+data[c("utm_x","utm_y")] <- as.data.frame(project(cbind(data$lon, data$lat),
+                                                  "+proj=utm +zone=30 ellps=WGS84"))
+
+# plot image with plots
+plotRGB(rapideye.30m, r=4, g=3, b=2, stretch="lin", main="RE with plots")
+points(data$utm_x, data$utm_y, pch=19, col="yellow")
+```
+
+
+
+##########################
+#JOIN FIELD DATA WITH COORDINATES FOR LANDSAT8
+##########################
+```{r, warning=FALSE}
+# merge Plot.data with plots (coordinates only)
+data <- merge(Plot.data, plots[c("plot.id","lat","lon")], by="plot.id", all.x=TRUE)
+
+# reproject coordinates from Lat/Lon to UTM
+# add columns for "utm_x" and "utm_y"
+data[c("utm_x","utm_y")] <- as.data.frame(project(cbind(data$lon, data$lat),
+                                                  "+proj=utm +zone=30 ellps=WGS84"))
+
+# plot image with plots
+plotRGB(landsat, r=4, g=3, b=2, stretch="lin", main="LS 8 with plots")
+points(data$utm_x, data$utm_y, pch=19, col="yellow")
+```
+
+
+
+
+##########################
+#EXTRACT PIXEL-VALUES FROM RAPIDEYE IMAGE
+##########################
+
+```{r, warning=FALSE}
+# for further analysis, we need to extract pixel values for the plots
+data[bands_re] <- as.data.frame(extract(rapideye.30m, cbind(data$utm_x, data$utm_y),
+                                        method='bilinear'))
+
+# see how data looks now
+head(data)
+```
+
+
+
+
+##########################
+#EXTRACT PIXEL-VALUES FROM LANDSAT8 IMAGE
+##########################
+```{r, warning=FALSE}
+# for further analysis, we need to extract pixel values for the plots
+data[bands_l8] <- as.data.frame(extract(landsat, cbind(data$utm_x, data$utm_y),
+                                        method='bilinear'))
+# see how data looks now
+head(data)
+```
+
+##########################
+#ACCURACY ASSESSMENT BY CROSS-VALIDATION FOR RAPIDEYE
+##########################
+
+
+```{r, warning=FALSE, message=FALSE}
+
+# test accuracy for several variables
+# make vector of y-variables
+yvars <- c("ba.ha","agb.ha","h.mean","c.can")
+k <- 3
+method <- "msn"
+xvars <- bands_re
+par(mfrow=c(2,2)) #four variables are plotted in four panels
+res_re <- c()
+for(i in 1:length(yvars)){
+  res_re <- rbind(res_re, cv.plot(data, yvars[i], xvars, k, method)) 
+}
+```
+
+
+
+##########################
+#ACCURACY ASSESSMENT BY CROSS-VALIDATION FOR LANDSAT8
+##########################
+```{r, warning=FALSE, message=FALSE}
+
+# test accuracy for several variables
+# make vector of y-variables
+yvars <- c("ba.ha","agb.ha","h.mean","c.can")
+k <- 3
+method <- "msn"
+xvars <- bands_l8
+par(mfrow=c(2,2)) #four variables are plotted in four panels
+res_l8 <- c()
+for(i in 1:length(yvars)){
+  res_l8 <- rbind(res_l8, cv.plot(data, yvars[i], xvars, k, method)) 
+}
+```
+
+
+From the below, it can be seen that the landsat 8 is more accurate than the rapideye as its the RMSE values are lower which shows that the residuals (i.e the difference between the measured/observed values and the predictions) are lower. Although, the differences are not so much, it can be deduced that the landsat 8 provide more accurate predictions for the Basal area, the above-ground biomass, mean height of trees and the canopy cover. Hence, it would be more appropriate.
+
+```{r, warning=FALSE, message=FALSE}
+# organized results for rapideye
+res_re <- cbind(yvars, res_re)
+res_re <- as.data.frame(res_re)
+names(res_re) <- c("Attribute","Bias","Bias (%)","RMSE","RMSE (%)","R.squared")
+res_re
+
+# organized results for landsat8
+res_l8 <- cbind(yvars, res_l8)
+res_l8 <- as.data.frame(res_l8)
+names(res_l8) <- c("Attribute","Bias","Bias (%)","RMSE","RMSE (%)","R.squared")
+res_l8
+```
+
+
+##########################
+#PREDICT ATTRIBUTES TO PIXELS FOR RAPIDEYE
+##########################
+```{r, warning=FALSE, message=FALSE}
+# create yai-object
+# select vegetation attributes
+yvars <- c("agb.ha","c.can")
+xvars <- bands_re
+y <- as.data.frame(data[,yvars])
+x <- as.data.frame(data[,xvars])
+k = 3
+method = "msn"
+msn <- yai(x=x, y=y, k=k, data=data, method=method)
+
+# convert RapidEye image to data frame
+rapideye.30m.df <- as.data.frame(rapideye.30m)
+
+# add 160 observations to data frame
+r160 <- as.data.frame(matrix(nrow=160, ncol=5, 0))
+names(r160) <- bands_re
+rapideye.30m.df <- rbind(r160, rapideye.30m.df)
+
+# predict values for pixels
+pred <- predict(msn, newdata=rapideye.30m.df, k=3, method="dstWeighted", observed=FALSE)
+# ignore warning: this is why 160 rows were added above 
+
+
+#RapidEye
+# convert data frame back to raster attribute by attribute
+# nrow and ncol depend on the image size
+# set extent and projection based on the image
+# aboveground biomass
+agb_ha <- raster(matrix(pred$agb.ha, nrow=585, ncol=620, byrow=TRUE))
+extent(agb_ha) <- rapideye.30m
+projection(agb_ha) <- projection(rapideye.30m)
+
+# canopy cover
+cc <- raster(matrix(pred$c.can, nrow=585, ncol=620, byrow=TRUE))
+extent(cc) <- rapideye.30m
+projection(cc) <- projection(rapideye.30m)
+
+# plot rasters
+par(mfrow=c(1,2))
+plot(agb_ha, main="Aboveground biomass (Mg/ha)")
+plot(cc, main="Canopy cover (%)")
+
+# compute mean based on the raster
+round(cellStats(agb_ha, stat='mean'), 2)
+round(cellStats(cc, stat='mean'), 2)
+# should be close to the field based estimate
+```
+
+
+
+##########################
+#PREDICT ATTRIBUTES TO PIXELS FOR LANDSAT8
+##########################
+```{r,warning=FALSE, message=FALSE}
+# create yai-object
+# select vegetation attributes
+yvars <- c("agb.ha","c.can")
+xvars <- bands_l8
+y <- as.data.frame(data[,yvars])
+x <- as.data.frame(data[,xvars])
+k = 3
+method = "msn"
+msn <- yai(x=x, y=y, k=k, data=data, method=method)
+
+# convert Landsat image to data frame
+landsat.df <- as.data.frame(landsat)
+
+# add 160 observations to data frame
+r160 <- as.data.frame(matrix(nrow=160, ncol=6, 0))
+names(r160) <- bands_l8
+landsat.df <- rbind(r160, landsat.df)
+
+# predict values for pixels
+pred <- predict(msn, newdata=landsat.df, k=3, method="dstWeighted", observed=FALSE)
+# ignore warning: this is why 160 rows were added above 
+
+
+#Lansaat
+# convert data frame back to raster attribute by attribute
+# nrow and ncol depend on the image size
+# set extent and projection based on the image
+
+# aboveground biomass
+agb_ha <- raster(matrix(pred$agb.ha, nrow=585, ncol=620, byrow=TRUE))
+extent(agb_ha) <- landsat
+projection(agb_ha) <- projection(landsat)
+
+# canopy cover
+cc <- raster(matrix(pred$c.can, nrow=585, ncol=620, byrow=TRUE))
+extent(cc) <- landsat
+projection(cc) <- projection(landsat)
+
+# plot rasters
+par(mfrow=c(1,2))
+plot(agb_ha, main="Aboveground biomass (Mg/ha)")
+plot(cc, main="Canopy cover (%)")
+
+# compute mean based on the raster
+round(cellStats(agb_ha, stat='mean'), 2)
+round(cellStats(cc, stat='mean'), 2)
+# should be close to the field based estimate
+```
+
+
+As it can be seen, the rapideye slightly underestimated the mean aboveground biomass and canopy cover. As mentioned earlier ,the rapideye has higher residual values and RMSE which reflects in the underestimation. Therefore, overall, the landsat 8 has better accuracy than the rapideye.
